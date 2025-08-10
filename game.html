@@ -1,0 +1,655 @@
+```html
+<!doctype html>
+<!--
+  Single-file TETRIS
+  - Playable in browser: open this file in Chrome/Firefox/Edge
+  - Features: 10x20 playfield, next-queue (3), hold piece, soft/hard drop,
+              basic SRS-ish rotation, scoring, levels, pause, restart, sound toggle
+  - Controls:
+      ◀ ▶ : move left / right
+      ▲ or X : rotate clockwise
+      Z : rotate counter-clockwise
+      ⇩ : soft drop
+      Space : hard drop
+      C : hold piece
+      P : pause / resume
+      R : restart
+      M : toggle sound (if browser allows)
+  - License: MIT (use/modify freely)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Tetris — Single File</title>
+<style>
+  :root{
+    --cell: 28px;
+    --cols: 10;
+    --rows: 20;
+    --gap: 2px;
+    --bg: #0b1020;
+    --panel: #0f1724;
+    --accent: #60a5fa;
+    --muted: #94a3b8;
+  }
+  *{box-sizing:border-box;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+  body{margin:0;background:linear-gradient(180deg,var(--bg),#071020);color:#e6eef8;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}
+  .wrap{display:grid;grid-template-columns:auto 260px;gap:20px;align-items:start}
+  canvas{background:#06121a;border-radius:8px;box-shadow:0 6px 18px rgba(2,6,23,.7)}
+  .panel{width:260px;background:linear-gradient(180deg,var(--panel),#071226);padding:16px;border-radius:10px;box-shadow:0 8px 30px rgba(2,6,23,.6)}
+  h1{margin:0 0 12px;font-size:18px;color:var(--accent)}
+  .meta{font-size:13px;color:var(--muted);margin-bottom:10px}
+  .row{display:flex;justify-content:space-between;align-items:center;margin:8px 0}
+  .big{font-size:22px;font-weight:700}
+  .btn{background:transparent;border:1px solid rgba(255,255,255,.06);padding:8px;border-radius:6px;color:var(--muted);cursor:pointer}
+  .controls{font-size:13px;color:var(--muted);line-height:1.6}
+  .nexts{display:flex;gap:8px;margin-top:10px}
+  .mini{width:56px;height:80px;background:#071726;border-radius:6px;padding:6px;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);gap:2px}
+  .footer{margin-top:12px;font-size:12px;color:var(--muted)}
+  label.switch{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+  input[type=checkbox]{width:16px;height:16px}
+  .muted{color:var(--muted)}
+  @media(max-width:800px){.wrap{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <canvas id="board" width="360" height="720"></canvas>
+    </div>
+
+    <aside class="panel" aria-label="Game panel">
+      <h1>Single-file TETRIS</h1>
+      <div class="meta">Open this file locally or serve it. Controls: arrows, Z/X, C, Space.</div>
+
+      <div class="row"><div>Score</div><div id="score" class="big">0</div></div>
+      <div class="row"><div>Level</div><div id="level">1</div></div>
+      <div class="row"><div>Lines</div><div id="lines">0</div></div>
+
+      <div style="margin-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:13px;color:var(--muted)">Next</div>
+          <div style="font-size:13px;color:var(--muted)">Hold</div>
+        </div>
+        <div style="display:flex;gap:12px;margin-top:8px">
+          <div id="nexts" class="nexts"></div>
+          <div id="hold" class="mini" title="Hold"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px" class="controls">
+        <div><strong>Controls</strong></div>
+        <div>← → : move | ↑ or X : rotate CW | Z : rotate CCW</div>
+        <div>↓ : soft drop | Space : hard drop | C : hold | P : pause</div>
+      </div>
+
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button id="restart" class="btn">Restart (R)</button>
+        <button id="soundBtn" class="btn">Sound: On (M)</button>
+      </div>
+
+      <div class="footer">
+        Built for learning. Implementations in other languages available on request.
+      </div>
+    </aside>
+  </div>
+
+<script>
+/* ---------- Tetris Core (self-contained) ---------- */
+/* Configuration */
+const COLS = 10, ROWS = 20, CELL = 36; // cell pixel size for canvas drawing
+const canvas = document.getElementById('board');
+canvas.width = COLS * CELL;
+canvas.height = ROWS * CELL;
+const ctx = canvas.getContext('2d', { alpha: false });
+
+/* Colors -> index 0 is empty */
+const COLORS = [
+  '#000000',
+  '#00f0f0', // I - cyan
+  '#0000f0', // J - blue
+  '#f0a000', // L - orange
+  '#f0f000', // O - yellow
+  '#00f000', // S - green
+  '#a000f0', // T - purple
+  '#f00000'  // Z - red
+];
+
+/* Tetromino definitions (4x4 matrices) using integers for color index */
+const TETROMINOES = {
+  I: { blocks: [
+    [0,0,0,0],
+    [1,1,1,1],
+    [0,0,0,0],
+    [0,0,0,0]
+  ], id:1},
+  J: { blocks: [
+    [2,0,0],
+    [2,2,2],
+    [0,0,0]
+  ], id:2},
+  L: { blocks: [
+    [0,0,3],
+    [3,3,3],
+    [0,0,0]
+  ], id:3},
+  O: { blocks: [
+    [4,4],
+    [4,4]
+  ], id:4},
+  S: { blocks: [
+    [0,5,5],
+    [5,5,0],
+    [0,0,0]
+  ], id:5},
+  T: { blocks: [
+    [0,6,0],
+    [6,6,6],
+    [0,0,0]
+  ], id:6},
+  Z: { blocks: [
+    [7,7,0],
+    [0,7,7],
+    [0,0,0]
+  ], id:7}
+};
+
+const BAG = ['I','J','L','O','S','T','Z'];
+
+/* Game state */
+let grid, current, nextQueue, holdPiece, canHold;
+let score=0, level=1, lines=0, gameOver=false, paused=false;
+let dropInterval = 1000; // ms
+let lastDrop = 0;
+let soundOn = true;
+
+/* UI refs */
+const scoreEl = document.getElementById('score');
+const levelEl = document.getElementById('level');
+const linesEl = document.getElementById('lines');
+const nextsEl = document.getElementById('nexts');
+const holdEl = document.getElementById('hold');
+const restartBtn = document.getElementById('restart');
+const soundBtn = document.getElementById('soundBtn');
+
+/* Simple sound effects (WebAudio) */
+let audioCtx = null;
+function beep(freq=200, duration=0.06, type='sine'){
+  if(!soundOn) return;
+  if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.value = 0.05;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start();
+  o.stop(audioCtx.currentTime + duration);
+}
+
+/* Helpers */
+function createEmptyGrid(){
+  const g = [];
+  for(let r=0;r<ROWS;r++){
+    g.push(new Array(COLS).fill(0));
+  }
+  return g;
+}
+function cloneMatrix(m){
+  return m.map(row => row.slice());
+}
+
+/* Rotation (clockwise) */
+function rotate(matrix){
+  const N = matrix.length;
+  const res = Array.from({length:N},_=>new Array(N).fill(0));
+  for(let r=0;r<N;r++) for(let c=0;c<N;c++) res[c][N-1-r] = matrix[r][c];
+  return res;
+}
+
+/* Collision detection */
+function collides(grid, piece, pos){
+  const m = piece.matrix;
+  for(let r=0;r<m.length;r++){
+    for(let c=0;c<m[r].length;c++){
+      if(m[r][c]){
+        const x = pos.x + c;
+        const y = pos.y + r;
+        if(x<0 || x>=COLS || y>=ROWS) return true;
+        if(y>=0 && grid[y][x]) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/* Place piece on grid (lock) */
+function placePiece(){
+  const m = current.matrix;
+  for(let r=0;r<m.length;r++){
+    for(let c=0;c<m[r].length;c++){
+      if(m[r][c]){
+        const x = current.pos.x + c;
+        const y = current.pos.y + r;
+        if(y>=0 && y<ROWS && x>=0 && x<COLS) grid[y][x] = m[r][c];
+      }
+    }
+  }
+  beep(500,0.04,'square');
+  const cleared = clearLines();
+  updateScore(cleared);
+  spawnPieceFromQueue();
+  canHold = true;
+}
+
+/* Clear complete rows */
+function clearLines(){
+  let removed = 0;
+  for(let r=ROWS-1;r>=0;r--){
+    if(grid[r].every(cell => cell !== 0)){
+      grid.splice(r,1);
+      grid.unshift(new Array(COLS).fill(0));
+      removed++;
+      r++; // re-check same index as rows moved down
+    }
+  }
+  if(removed) beep(800,0.06,'sine');
+  return removed;
+}
+
+/* Scoring (classic-ish) */
+function updateScore(cleared){
+  const pointsFor = {0:0,1:40,2:100,3:300,4:1200};
+  score += (pointsFor[cleared] || 0) * level;
+  lines += cleared;
+  // Level up every 10 lines
+  const newLevel = Math.floor(lines / 10) + 1;
+  if(newLevel !== level){
+    level = newLevel;
+    // speed up
+    dropInterval = Math.max(80, 1000 - (level-1)*80);
+    beep(1000,0.12,'sawtooth');
+  }
+  scoreEl.textContent = score;
+  levelEl.textContent = level;
+  linesEl.textContent = lines;
+}
+
+/* Bag randomizer */
+function newBag(){
+  const bag = BAG.slice();
+  for(let i=bag.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [bag[i],bag[j]] = [bag[j],bag[i]];
+  }
+  return bag;
+}
+
+/* Spawn logic */
+let bag = [];
+function spawnPieceFromQueue(){
+  if(nextQueue.length < 4) refillQueue();
+  const id = nextQueue.shift();
+  const proto = TETROMINOES[id];
+  const matrix = normalizeMatrix(proto.blocks);
+  current = {
+    id,
+    matrix,
+    pos: { x: Math.floor((COLS - matrix[0].length)/2), y: -matrix.length + 1 }
+  };
+  // If spawn collides immediately, game over
+  if(collides(grid, current, current.pos)){
+    gameOver = true;
+    paused = true;
+    beep(120,0.3,'sine');
+    alert('Game Over — Score: ' + score);
+  }
+  updateNextsUI();
+}
+
+/* Ensure matrix is square for rotation convenience */
+function normalizeMatrix(blocks){
+  const size = Math.max(blocks.length, blocks[0].length);
+  const m = Array.from({length:size},_=>new Array(size).fill(0));
+  for(let r=0;r<blocks.length;r++) for(let c=0;c<blocks[r].length;c++) m[r][c] = blocks[r][c];
+  return m;
+}
+
+/* Refill queue using bag */
+function refillQueue(){
+  if(bag.length === 0) bag = newBag();
+  while(nextQueue.length < 8){
+    if(bag.length === 0) bag = newBag();
+    nextQueue.push(bag.pop());
+  }
+}
+
+/* Hold mechanic */
+function holdCurrent(){
+  if(!canHold) return;
+  beep(250,0.06,'triangle');
+  if(!holdPiece){
+    holdPiece = current.id;
+    spawnPieceFromQueue();
+  } else {
+    const tmp = holdPiece;
+    holdPiece = current.id;
+    // spawn tmp instead of next
+    current = {
+      id: tmp,
+      matrix: normalizeMatrix(TETROMINOES[tmp].blocks),
+      pos: { x: Math.floor((COLS - TETROMINOES[tmp].blocks[0].length)/2), y:-1 }
+    };
+    // if immediate collision, it's game over handled in place logic later
+    if(collides(grid, current, current.pos)){
+      gameOver = true; paused = true;
+      alert('Game Over — Score: ' + score);
+    }
+  }
+  canHold = false;
+  updateHoldUI();
+  updateNextsUI();
+}
+
+/* Draw functions */
+function draw(){
+  // background
+  ctx.fillStyle = '#06121a';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // draw grid cells
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      drawCell(c, r, grid[r][c]);
+    }
+  }
+
+  // draw current piece
+  if(current){
+    const m = current.matrix;
+    for(let r=0;r<m.length;r++){
+      for(let c=0;c<m[r].length;c++){
+        if(m[r][c]){
+          const x = current.pos.x + c;
+          const y = current.pos.y + r;
+          if(y >= 0) drawCell(x, y, m[r][c]);
+        }
+      }
+    }
+  }
+
+  // grid lines (subtle)
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 1;
+  for(let x=0;x<=COLS;x++){
+    ctx.beginPath();
+    ctx.moveTo(x*CELL,0);
+    ctx.lineTo(x*CELL,ROWS*CELL);
+    ctx.stroke();
+  }
+  for(let y=0;y<=ROWS;y++){
+    ctx.beginPath();
+    ctx.moveTo(0,y*CELL);
+    ctx.lineTo(COLS*CELL,y*CELL);
+    ctx.stroke();
+  }
+}
+
+function drawCell(col, row, idx){
+  const x = col * CELL;
+  const y = row * CELL;
+  if(idx){
+    ctx.fillStyle = COLORS[idx] || '#fff';
+    roundRect(ctx, x+2, y+2, CELL-4, CELL-4, 6, true, false);
+    // subtle inner highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(x+4, y+4, CELL-8, Math.max(6, CELL/5));
+  } else {
+    ctx.fillStyle = '#06121a';
+    ctx.fillRect(x, y, CELL, CELL);
+  }
+}
+
+/* Rounded rect helper */
+function roundRect(ctx, x, y, w, h, r, fill, stroke){
+  if (typeof r === 'number') r = {tl:r, tr:r, br:r, bl:r};
+  ctx.beginPath();
+  ctx.moveTo(x + r.tl, y);
+  ctx.lineTo(x + w - r.tr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r.tr);
+  ctx.lineTo(x + w, y + h - r.br);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r.br, y + h);
+  ctx.lineTo(x + r.bl, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r.bl);
+  ctx.lineTo(x, y + r.tl);
+  ctx.quadraticCurveTo(x, y, x + r.tl, y);
+  ctx.closePath();
+  if(fill) ctx.fill();
+  if(stroke) ctx.stroke();
+}
+
+/* Next & hold UI */
+function updateNextsUI(){
+  nextsEl.innerHTML = '';
+  for(let i=0;i<3;i++){
+    const id = nextQueue[i];
+    const box = document.createElement('div');
+    box.className='mini';
+    // render the piece small into box using tiny grid
+    const canvasMini = document.createElement('canvas');
+    canvasMini.width = 56; canvasMini.height = 80;
+    const g = canvasMini.getContext('2d', { alpha:false });
+    g.fillStyle = '#071726';
+    g.fillRect(0,0,canvasMini.width, canvasMini.height);
+    const size = 4, cell = 12;
+    const proto = TETROMINOES[id];
+    const m = normalizeMatrix(proto.blocks);
+    // center offset
+    const offsetX = Math.floor((4 - m[0].length)/2);
+    const offsetY = Math.floor((4 - m.length)/2);
+    for(let r=0;r<4;r++){
+      for(let c=0;c<4;c++){
+        const val = (m[r+0] && m[r+0][c+0]) || 0;
+        g.fillStyle = val ? COLORS[val] : '#071726';
+        g.fillRect((c+offsetX)*cell+6, (r+offsetY)*cell+8, cell-2, cell-2);
+      }
+    }
+    box.appendChild(canvasMini);
+    nextsEl.appendChild(box);
+  }
+}
+
+function updateHoldUI(){
+  holdEl.innerHTML = '';
+  const canvasMini = document.createElement('canvas');
+  canvasMini.width = 56; canvasMini.height = 80;
+  const g = canvasMini.getContext('2d', { alpha:false });
+  g.fillStyle = '#071726';
+  g.fillRect(0,0,canvasMini.width, canvasMini.height);
+  if(holdPiece){
+    const m = normalizeMatrix(TETROMINOES[holdPiece].blocks);
+    const cell = 12;
+    const offsetX = Math.floor((4 - m[0].length)/2);
+    const offsetY = Math.floor((4 - m.length)/2);
+    for(let r=0;r<4;r++){
+      for(let c=0;c<4;c++){
+        const val = (m[r] && m[r][c]) || 0;
+        g.fillStyle = val ? COLORS[val] : '#071726';
+        g.fillRect((c+offsetX)*cell+6, (r+offsetY)*cell+8, cell-2, cell-2);
+      }
+    }
+  }
+  holdEl.appendChild(canvasMini);
+}
+
+/* Input handling */
+const keys = {};
+window.addEventListener('keydown', e=>{
+  if(e.repeat) return;
+  const k = e.key;
+  keys[k] = true;
+  if(k==='ArrowLeft'){ move(-1); }
+  else if(k==='ArrowRight'){ move(1); }
+  else if(k==='ArrowDown'){ softDrop(); }
+  else if(k===' '){ hardDrop(); e.preventDefault(); }
+  else if(k==='x' || k==='X' || k==='ArrowUp'){ rotateCW(); }
+  else if(k==='z' || k==='Z'){ rotateCCW(); }
+  else if(k==='c' || k==='C'){ holdCurrent(); }
+  else if(k==='p' || k==='P'){ togglePause(); }
+  else if(k==='r' || k==='R'){ restart(); }
+  else if(k==='m' || k==='M'){ toggleSound(); }
+});
+window.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+/* Movement */
+function move(dir){
+  if(paused || gameOver) return;
+  const newPos = { x: current.pos.x + dir, y: current.pos.y };
+  if(!collides(grid, current, newPos)) {
+    current.pos.x += dir;
+    beep(300,0.02,'sine');
+  } else {
+    // wall kick crude: try shifting up one and then dir
+    const shifted = { x: current.pos.x - dir, y: current.pos.y };
+    if(!collides(grid, current, shifted)) current.pos.x -= dir;
+  }
+}
+
+function softDrop(){
+  if(paused || gameOver) return;
+  const newPos = { x: current.pos.x, y: current.pos.y + 1 };
+  if(!collides(grid, current, newPos)){
+    current.pos.y++;
+    score += 1; // small soft-drop reward
+    scoreEl.textContent = score;
+  } else {
+    // lock if cannot move down
+    placePiece();
+  }
+}
+
+function hardDrop(){
+  if(paused || gameOver) return;
+  while(!collides(grid, current, {x: current.pos.x, y: current.pos.y + 1})){
+    current.pos.y++;
+    score += 2;
+  }
+  placePiece();
+  scoreEl.textContent = score;
+}
+
+/* Rotation with a few simple kicks */
+function rotateCW(){
+  if(paused || gameOver) return;
+  const rotated = rotate(current.matrix);
+  const original = current.matrix;
+  // try 0, +1, -1, +2 shifts (simple wall kick)
+  const kicks = [0, -1, 1, -2, 2];
+  for(const k of kicks){
+    const testPos = { x: current.pos.x + k, y: current.pos.y };
+    const testPiece = { matrix: rotated };
+    if(!collides(grid, testPiece, testPos)){
+      current.matrix = rotated;
+      current.pos.x += k;
+      beep(420,0.03,'sine');
+      return;
+    }
+  }
+  // if none worked, do nothing
+}
+function rotateCCW(){
+  if(paused || gameOver) return;
+  // rotate CCW = rotate clockwise 3x (or inverse)
+  let rotated = current.matrix;
+  for(let i=0;i<3;i++) rotated = rotate(rotated);
+  const kicks = [0, -1, 1, -2, 2];
+  for(const k of kicks){
+    const testPos = { x: current.pos.x + k, y: current.pos.y };
+    const testPiece = { matrix: rotated };
+    if(!collides(grid, testPiece, testPos)){
+      current.matrix = rotated;
+      current.pos.x += k;
+      beep(420,0.03,'sine');
+      return;
+    }
+  }
+}
+
+/* Game loop */
+let lastTime = 0;
+function tick(now){
+  if(!lastTime) lastTime = now;
+  const delta = now - lastTime;
+  lastTime = now;
+
+  if(!paused && !gameOver){
+    lastDrop += delta;
+    if(lastDrop >= dropInterval){
+      lastDrop = 0;
+      // move down
+      if(!collides(grid, current, { x: current.pos.x, y: current.pos.y + 1 })){
+        current.pos.y++;
+      } else {
+        placePiece();
+      }
+    }
+  }
+
+  draw();
+  requestAnimationFrame(tick);
+}
+
+/* Init / restart */
+function startNewGame(){
+  grid = createEmptyGrid();
+  nextQueue = [];
+  holdPiece = null;
+  canHold = true;
+  bag = newBag();
+  refillQueue();
+  spawnPieceFromQueue();
+  score = 0; level = 1; lines = 0;
+  dropInterval = 1000;
+  gameOver = false;
+  paused = false;
+  scoreEl.textContent = score;
+  levelEl.textContent = level;
+  linesEl.textContent = lines;
+  updateHoldUI();
+  updateNextsUI();
+}
+
+/* Toggle pause & restart */
+function togglePause(){
+  if(gameOver) return;
+  paused = !paused;
+  if(paused) beep(150,0.05,'sine'); else beep(600,0.05,'sine');
+}
+function restart(){
+  if(confirm('Restart game?')) startNewGame();
+}
+function toggleSound(){
+  soundOn = !soundOn;
+  soundBtn.textContent = 'Sound: ' + (soundOn ? 'On (M)' : 'Off (M)');
+}
+
+/* Button hooks */
+restartBtn.addEventListener('click', restart);
+soundBtn.addEventListener('click', toggleSound);
+
+/* Start */
+startNewGame();
+requestAnimationFrame(tick);
+
+/* Prevent arrow keys scrolling page when focused */
+window.addEventListener("keydown", function(e) {
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].indexOf(e.code) > -1) {
+    e.preventDefault();
+  }
+}, false);
+
+</script>
+</body>
+</html>
+```
